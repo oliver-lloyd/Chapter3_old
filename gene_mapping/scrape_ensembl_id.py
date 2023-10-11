@@ -54,4 +54,3 @@ if __name__ == '__main__':
 
     out_df = pd.DataFrame(out_list, columns=['NCBI UID', 'Ensembl ID'])
     out_df.to_csv('NCBI_ensembl_map.csv', index=False)
-

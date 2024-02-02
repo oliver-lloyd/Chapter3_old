@@ -14,6 +14,8 @@ import os
 from kge.model import KgeModel
 from kge.util.io import load_checkpoint
 from sklearn.decomposition import PCA
+from geomstats.learning.frechet_mean import FrechetMean
+from geomstats.geometry.hypersphere import Hypersphere
 
 
 def get_bipartite_neighbours(edgelist, drug):
@@ -29,6 +31,24 @@ def mean_column_value(mat):
         mean_val = np.mean([vec[i] for vec in mat])
         out_vec.append(mean_val)
     return out_vec
+
+
+def median_column_value(mat):
+    out_vec = []
+    for i in range(mat.shape[1]):
+        median_val = np.median([vec[i] for vec in mat])
+        out_vec.append(median_val)
+    return out_vec
+
+
+def frechet_mean(neighbour_vecs, weights=None):
+    magnitudes = [torch.linalg.norm(neighbour_vecs[i]) for i in range(len(neighbour_vecs))]
+    normed_vecs = [np.array(vec/mag) for vec, mag in zip(neighbour_vecs, magnitudes)]
+    sphere = Hypersphere(dim=len(normed_vecs[0]))
+    mean = FrechetMean(sphere)
+    mean.metric = sphere.metric  # Workaround, otherwise: "AttributeError: 'Hypersphere' object has no attribute 'log'"
+    mean.fit(np.array(normed_vecs), weights=weights)
+    return mean.estimate_
 
 
 # Load embeddings
@@ -50,6 +70,9 @@ node_index_to_name = {row[0]: row[1] for _, row in node_list.iterrows()}
 # Get list of drugs
 drugs = [key for key in node_name_to_index.keys() if key.startswith('CID')]
 
+# Load Jaccard indices
+jaccard = pd.read_csv('../drug_gene_network/stats/jaccard_indices.csv')
+
 # Load drug target edges
 drug_target = pd.read_csv('../../../Chapter2/data/raw/bio-decagon-targets.csv')
 
@@ -63,7 +86,7 @@ else:
     results = pd.read_csv(outfile_name)
 
 for test_drug in drugs:
-
+    print(test_drug)
     # Get info of bipartite neighbour drugs (targeting the same genes)
     neighbour_nodes = get_bipartite_neighbours(drug_target, test_drug)
     n_neighbours = len(neighbour_nodes)
@@ -140,6 +163,45 @@ for test_drug in drugs:
     already_run = method in existing_check['vector_method'].values
     if not already_run:
         my_vec = mean_column_value(neighbours_embeds)
+        result = [test_drug, method, n_neighbours] + my_vec
+        results.loc[len(results)] = result
+
+    #######################################
+    # Take component-wise median of neighbour embeddings
+    method = 'median columns'
+    already_run = method in existing_check['vector_method'].values
+    if not already_run:
+        my_vec = median_column_value(neighbours_embeds)
+        result = [test_drug, method, n_neighbours] + my_vec
+        results.loc[len(results)] = result
+
+    #######################################
+    # Frechet mean
+    method = 'frechet mean'
+    already_run = method in existing_check['vector_method'].values
+    if not already_run:
+        my_vec = frechet_mean(neighbours_embeds).tolist()
+        result = [test_drug, method, n_neighbours] + my_vec
+        results.loc[len(results)] = result
+
+    #######################################
+    # Frechet mean weighted by jaccard index
+    method = 'weighted frechet mean'
+    already_run = method in existing_check['vector_method'].values
+    if not already_run:
+        # Select local jaccard values, accounting for when dyad is backwards
+        jacc_local = jaccard.query('drug1 == @test_drug or drug2 == @test_drug')
+        
+        # Get jaccard indicies for each neighbour
+        jaccards = []
+        for n in neighbour_nodes:
+            jacc_row = jacc_local.query(f'drug1 == "{n}" or drug2 == "{n}"')
+            assert len(jacc_row) == 1
+            jacc_ind = jacc_row.normalised_jaccard.iloc[0]
+            jaccards.append(jacc_ind)
+
+        # Calc weighted Frechet mean
+        my_vec = frechet_mean(neighbours_embeds, weights=jaccards).tolist()
         result = [test_drug, method, n_neighbours] + my_vec
         results.loc[len(results)] = result
 
